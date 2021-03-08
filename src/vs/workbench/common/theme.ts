@@ -6,19 +6,12 @@
 import { localize } from 'vs/nls';
 import { registerColor, editorBackground, contrastBorder, transparent, editorWidgetBackground, textLinkForeground, lighten, darken, focusBorder, activeContrastBorder, editorWidgetForeground, editorErrorForeground, editorWarningForeground, editorInfoForeground, treeIndentGuidesStroke, errorForeground } from 'vs/platform/theme/common/colorRegistry';
 import { IColorTheme } from 'vs/platform/theme/common/themeService';
-import { Color } from 'vs/base/common/color';
+import { Color, RGBA } from 'vs/base/common/color';
 
 // < --- Workbench (not customizable) --- >
 
 export function WORKBENCH_BACKGROUND(theme: IColorTheme): Color {
-	switch (theme.type) {
-		case 'dark':
-			return Color.fromHex('#252526');
-		case 'light':
-			return Color.fromHex('#F3F3F3');
-		default:
-			return Color.fromHex('#000000');
-	}
+	return new Color(new RGBA(0, 0, 0, 0));
 }
 
 // < --- Tabs --- >

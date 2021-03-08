@@ -218,6 +218,9 @@ function configureCommandlineSwitchesSync(cliArgs) {
 		}
 	});
 
+	app.commandLine.appendSwitch('enable-transparent-visuals');
+	app.disableHardwareAcceleration();
+
 	// Support JS Flags
 	const jsFlags = getJSFlags(cliArgs);
 	if (jsFlags) {
