@@ -29,6 +29,9 @@ function getStringValue(data: unknown): string {
 }
 
 class JSONRendererContrib extends Disposable implements IOutputRendererContribution {
+	getType() {
+		return RenderOutputType.Mainframe;
+	}
 
 	getMimetypes() {
 		return ['application/json'];
@@ -43,7 +46,7 @@ class JSONRendererContrib extends Disposable implements IOutputRendererContribut
 		super();
 	}
 
-	render(output: ICellOutputViewModel, items: IOutputItemDto[], container: HTMLElement, notebookUri: URI | undefined): IRenderOutput {
+	render(output: ICellOutputViewModel, items: IOutputItemDto[], container: HTMLElement, notebookUri: URI): IRenderOutput {
 		const str = items.map(item => JSON.stringify(item.value, null, '\t')).join('');
 
 		const editor = this.instantiationService.createInstance(CodeEditorWidget, container, {
@@ -78,6 +81,10 @@ class JSONRendererContrib extends Disposable implements IOutputRendererContribut
 }
 
 class JavaScriptRendererContrib extends Disposable implements IOutputRendererContribution {
+	getType() {
+		return RenderOutputType.Html;
+	}
+
 	getMimetypes() {
 		return ['application/javascript'];
 	}
@@ -88,7 +95,7 @@ class JavaScriptRendererContrib extends Disposable implements IOutputRendererCon
 		super();
 	}
 
-	render(output: ICellOutputViewModel, items: IOutputItemDto[], container: HTMLElement, notebookUri: URI | undefined): IRenderOutput {
+	render(output: ICellOutputViewModel, items: IOutputItemDto[], container: HTMLElement, notebookUri: URI): IRenderOutput {
 		let scriptVal = '';
 		items.forEach(item => {
 			const data = item.value;
@@ -105,6 +112,9 @@ class JavaScriptRendererContrib extends Disposable implements IOutputRendererCon
 }
 
 class CodeRendererContrib extends Disposable implements IOutputRendererContribution {
+	getType() {
+		return RenderOutputType.Mainframe;
+	}
 
 	getMimetypes() {
 		return ['text/x-javascript'];
@@ -119,7 +129,7 @@ class CodeRendererContrib extends Disposable implements IOutputRendererContribut
 		super();
 	}
 
-	render(output: ICellOutputViewModel, items: IOutputItemDto[], container: HTMLElement, notebookUri: URI | undefined): IRenderOutput {
+	render(output: ICellOutputViewModel, items: IOutputItemDto[], container: HTMLElement, notebookUri: URI): IRenderOutput {
 		const str = items.map(item => getStringValue(item.value)).join('');
 		const editor = this.instantiationService.createInstance(CodeEditorWidget, container, {
 			...getOutputSimpleEditorOptions(),
@@ -152,6 +162,9 @@ class CodeRendererContrib extends Disposable implements IOutputRendererContribut
 }
 
 class StreamRendererContrib extends Disposable implements IOutputRendererContribution {
+	getType() {
+		return RenderOutputType.Mainframe;
+	}
 
 	getMimetypes() {
 		return ['application/x.notebook.stdout', 'application/x.notebook.stream'];
@@ -167,13 +180,13 @@ class StreamRendererContrib extends Disposable implements IOutputRendererContrib
 		super();
 	}
 
-	render(output: ICellOutputViewModel, items: IOutputItemDto[], container: HTMLElement, notebookUri: URI | undefined): IRenderOutput {
+	render(output: ICellOutputViewModel, items: IOutputItemDto[], container: HTMLElement, notebookUri: URI): IRenderOutput {
 		const linkDetector = this.instantiationService.createInstance(LinkDetector);
 
 		items.forEach(item => {
 			const text = getStringValue(item.value);
 			const contentNode = DOM.$('span.output-stream');
-			truncatedArrayOfString(contentNode, [text], linkDetector, this.openerService, this.textFileService, this.themeService);
+			truncatedArrayOfString(notebookUri!, output.cellViewModel, contentNode, [text], linkDetector, this.openerService, this.textFileService, this.themeService);
 			container.appendChild(contentNode);
 		});
 
@@ -182,12 +195,15 @@ class StreamRendererContrib extends Disposable implements IOutputRendererContrib
 }
 
 class StderrRendererContrib extends StreamRendererContrib {
+	override getType() {
+		return RenderOutputType.Mainframe;
+	}
 
-	getMimetypes() {
+	override getMimetypes() {
 		return ['application/x.notebook.stderr'];
 	}
 
-	render(output: ICellOutputViewModel, items: IOutputItemDto[], container: HTMLElement, notebookUri: URI | undefined): IRenderOutput {
+	override render(output: ICellOutputViewModel, items: IOutputItemDto[], container: HTMLElement, notebookUri: URI): IRenderOutput {
 		const result = super.render(output, items, container, notebookUri);
 		container.classList.add('error');
 		return result;
@@ -195,6 +211,9 @@ class StderrRendererContrib extends StreamRendererContrib {
 }
 
 class ErrorRendererContrib extends Disposable implements IOutputRendererContribution {
+	getType() {
+		return RenderOutputType.Mainframe;
+	}
 
 	getMimetypes() {
 		return ['application/x.notebook.error-traceback'];
@@ -209,7 +228,7 @@ class ErrorRendererContrib extends Disposable implements IOutputRendererContribu
 		super();
 	}
 
-	render(output: ICellOutputViewModel, items: IOutputItemDto[], container: HTMLElement, notebookUri: URI | undefined): IRenderOutput {
+	render(output: ICellOutputViewModel, items: IOutputItemDto[], container: HTMLElement, notebookUri: URI): IRenderOutput {
 		const linkDetector = this.instantiationService.createInstance(LinkDetector);
 		items.forEach(item => {
 			const data: any = item.value;
@@ -242,6 +261,9 @@ class ErrorRendererContrib extends Disposable implements IOutputRendererContribu
 }
 
 class PlainTextRendererContrib extends Disposable implements IOutputRendererContribution {
+	getType() {
+		return RenderOutputType.Mainframe;
+	}
 
 	getMimetypes() {
 		return ['text/plain'];
@@ -257,12 +279,12 @@ class PlainTextRendererContrib extends Disposable implements IOutputRendererCont
 		super();
 	}
 
-	render(output: ICellOutputViewModel, items: IOutputItemDto[], container: HTMLElement, notebookUri: URI | undefined): IRenderOutput {
+	render(output: ICellOutputViewModel, items: IOutputItemDto[], container: HTMLElement, notebookUri: URI): IRenderOutput {
 		const linkDetector = this.instantiationService.createInstance(LinkDetector);
 
 		const str = items.map(item => getStringValue(item.value));
 		const contentNode = DOM.$('.output-plaintext');
-		truncatedArrayOfString(contentNode, str, linkDetector, this.openerService, this.textFileService, this.themeService);
+		truncatedArrayOfString(notebookUri!, output.cellViewModel, contentNode, str, linkDetector, this.openerService, this.textFileService, this.themeService);
 		container.appendChild(contentNode);
 
 		return { type: RenderOutputType.Mainframe, supportAppend: true };
@@ -270,6 +292,9 @@ class PlainTextRendererContrib extends Disposable implements IOutputRendererCont
 }
 
 class HTMLRendererContrib extends Disposable implements IOutputRendererContribution {
+	getType() {
+		return RenderOutputType.Html;
+	}
 
 	getMimetypes() {
 		return ['text/html'];
@@ -281,7 +306,7 @@ class HTMLRendererContrib extends Disposable implements IOutputRendererContribut
 		super();
 	}
 
-	render(output: ICellOutputViewModel, items: IOutputItemDto[], container: HTMLElement, notebookUri: URI | undefined): IRenderOutput {
+	render(output: ICellOutputViewModel, items: IOutputItemDto[], container: HTMLElement, notebookUri: URI): IRenderOutput {
 		const data = items.map(item => getStringValue(item.value)).join('');
 
 		const str = (isArray(data) ? data.join('') : data) as string;
@@ -294,6 +319,9 @@ class HTMLRendererContrib extends Disposable implements IOutputRendererContribut
 }
 
 class SVGRendererContrib extends Disposable implements IOutputRendererContribution {
+	getType() {
+		return RenderOutputType.Html;
+	}
 
 	getMimetypes() {
 		return ['image/svg+xml'];
@@ -305,7 +333,7 @@ class SVGRendererContrib extends Disposable implements IOutputRendererContributi
 		super();
 	}
 
-	render(output: ICellOutputViewModel, items: IOutputItemDto[], container: HTMLElement, notebookUri: URI | undefined): IRenderOutput {
+	render(output: ICellOutputViewModel, items: IOutputItemDto[], container: HTMLElement, notebookUri: URI): IRenderOutput {
 		const str = items.map(item => getStringValue(item.value)).join('');
 		return {
 			type: RenderOutputType.Html,
@@ -316,6 +344,9 @@ class SVGRendererContrib extends Disposable implements IOutputRendererContributi
 }
 
 class MdRendererContrib extends Disposable implements IOutputRendererContribution {
+	getType() {
+		return RenderOutputType.Mainframe;
+	}
 
 	getMimetypes() {
 		return ['text/markdown'];
@@ -343,6 +374,9 @@ class MdRendererContrib extends Disposable implements IOutputRendererContributio
 }
 
 class PNGRendererContrib extends Disposable implements IOutputRendererContribution {
+	getType() {
+		return RenderOutputType.Mainframe;
+	}
 
 	getMimetypes() {
 		return ['image/png'];
@@ -354,7 +388,7 @@ class PNGRendererContrib extends Disposable implements IOutputRendererContributi
 		super();
 	}
 
-	render(output: ICellOutputViewModel, items: IOutputItemDto[], container: HTMLElement, notebookUri: URI | undefined): IRenderOutput {
+	render(output: ICellOutputViewModel, items: IOutputItemDto[], container: HTMLElement, notebookUri: URI): IRenderOutput {
 		items.forEach(item => {
 			const image = document.createElement('img');
 			const imagedata = item.value;
@@ -369,6 +403,9 @@ class PNGRendererContrib extends Disposable implements IOutputRendererContributi
 }
 
 class JPEGRendererContrib extends Disposable implements IOutputRendererContribution {
+	getType() {
+		return RenderOutputType.Mainframe;
+	}
 
 	getMimetypes() {
 		return ['image/jpeg'];
@@ -380,7 +417,7 @@ class JPEGRendererContrib extends Disposable implements IOutputRendererContribut
 		super();
 	}
 
-	render(output: ICellOutputViewModel, items: IOutputItemDto[], container: HTMLElement, notebookUri: URI | undefined): IRenderOutput {
+	render(output: ICellOutputViewModel, items: IOutputItemDto[], container: HTMLElement, notebookUri: URI): IRenderOutput {
 		items.forEach(item => {
 			const image = document.createElement('img');
 			const imagedata = item.value;

@@ -8,16 +8,19 @@ import { NotebookRegistry } from 'vs/workbench/contrib/notebook/browser/notebook
 import { onUnexpectedError } from 'vs/base/common/errors';
 import { ICellOutputViewModel, ICommonNotebookEditor, IOutputTransformContribution, IRenderOutput, RenderOutputType } from 'vs/workbench/contrib/notebook/browser/notebookBrowser';
 import { URI } from 'vs/base/common/uri';
+import { Disposable } from 'vs/base/common/lifecycle';
 
-export class OutputRenderer {
-	protected readonly _contributions: { [key: string]: IOutputTransformContribution; };
-	protected readonly _renderers: IOutputTransformContribution[];
+export class OutputRenderer extends Disposable {
+	protected _contributions: { [key: string]: IOutputTransformContribution; };
+	protected _renderers: IOutputTransformContribution[];
 	private _richMimeTypeRenderers = new Map<string, IOutputTransformContribution>();
 
 	constructor(
 		notebookEditor: ICommonNotebookEditor,
 		private readonly instantiationService: IInstantiationService
 	) {
+		super();
+
 		this._contributions = {};
 		this._renderers = [];
 
@@ -36,6 +39,14 @@ export class OutputRenderer {
 		}
 	}
 
+	getContribution(preferredMimeType: string | undefined): IOutputTransformContribution | undefined {
+		if (preferredMimeType) {
+			return this._richMimeTypeRenderers.get(preferredMimeType);
+		}
+
+		return undefined;
+	}
+
 	renderNoop(viewModel: ICellOutputViewModel, container: HTMLElement): IRenderOutput {
 		const contentNode = document.createElement('p');
 
@@ -44,7 +55,7 @@ export class OutputRenderer {
 		return { type: RenderOutputType.Mainframe };
 	}
 
-	render(viewModel: ICellOutputViewModel, container: HTMLElement, preferredMimeType: string | undefined, notebookUri: URI | undefined): IRenderOutput {
+	render(viewModel: ICellOutputViewModel, container: HTMLElement, preferredMimeType: string | undefined, notebookUri: URI): IRenderOutput {
 		if (!viewModel.model.outputs.length) {
 			return this.renderNoop(viewModel, container);
 		}
@@ -73,5 +84,11 @@ export class OutputRenderer {
 		} else {
 			return this.renderNoop(viewModel, container);
 		}
+	}
+
+	override dispose() {
+		this._contributions = {};
+		this._renderers = [];
+		this._richMimeTypeRenderers.clear();
 	}
 }

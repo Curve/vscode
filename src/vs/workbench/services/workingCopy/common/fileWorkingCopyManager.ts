@@ -5,7 +5,7 @@
 
 import { Disposable, DisposableStore, dispose, IDisposable } from 'vs/base/common/lifecycle';
 import { Event, Emitter } from 'vs/base/common/event';
-import { FileWorkingCopy, IFileWorkingCopy, IFileWorkingCopyModel, IFileWorkingCopyModelFactory, IFileWorkingCopySaveOptions } from 'vs/workbench/services/workingCopy/common/fileWorkingCopy';
+import { FileWorkingCopy, FileWorkingCopyState, IFileWorkingCopy, IFileWorkingCopyModel, IFileWorkingCopyModelFactory, IFileWorkingCopySaveOptions } from 'vs/workbench/services/workingCopy/common/fileWorkingCopy';
 import { SaveReason } from 'vs/workbench/common/editor';
 import { ResourceMap } from 'vs/base/common/map';
 import { Promises, ResourceQueue } from 'vs/base/common/async';
@@ -62,7 +62,7 @@ export interface IFileWorkingCopyManager<T extends IFileWorkingCopyModel> extend
 	/**
 	 * Access to all known file working copies within the manager.
 	 */
-	readonly workingCopies: IFileWorkingCopy<T>[];
+	readonly workingCopies: readonly IFileWorkingCopy<T>[];
 
 	/**
 	 * Returns the file working copy for the provided resource
@@ -101,6 +101,8 @@ export interface IFileWorkingCopyManager<T extends IFileWorkingCopyModel> extend
 	 * copy may chose to return an existing file working copy with different casing
 	 * to respect file systems that are case insensitive.
 	 *
+	 * Note: Callers must `dispose` the working copy when no longer needed.
+	 *
 	 * @param source the source resource to save as
 	 * @param target the optional target resource to save to. if not defined, the user
 	 * will be asked for input
@@ -114,11 +116,20 @@ export interface IFileWorkingCopyManager<T extends IFileWorkingCopyModel> extend
 	 * Waits for the file working copy to be ready to be disposed. There may be
 	 * conditions under which the file working copy cannot be disposed, e.g. when
 	 * it is dirty. Once the promise is settled, it is safe to dispose.
-	 *
-	 * TODO@bpasero this is a bit fishy, should this not be inside the working copy
-	 * itself?
 	 */
 	canDispose(workingCopy: IFileWorkingCopy<T>): true | Promise<true>;
+
+	/**
+	 * Disposes all working copies of the manager and disposes the manager. This
+	 * method is different from `dispose` in that it will unregister any working
+	 * copy from the `IWorkingCopyService`. Since this impact things like backups,
+	 * the method is `async` because it needs to trigger `save` for any dirty
+	 * working copy to preserve the data.
+	 *
+	 * Callers should make sure to e.g. close any editors associated with the
+	 * working copy.
+	 */
+	destroy(): Promise<void>;
 }
 
 export interface IFileWorkingCopySaveEvent<T extends IFileWorkingCopyModel> {
@@ -200,6 +211,7 @@ export class FileWorkingCopyManager<T extends IFileWorkingCopyModel> extends Dis
 	private readonly workingCopyResolveQueue = this._register(new ResourceQueue());
 
 	constructor(
+		private readonly workingCopyTypeId: string,
 		private readonly modelFactory: IFileWorkingCopyModelFactory<T>,
 		@IFileService private readonly fileService: IFileService,
 		@ILifecycleService private readonly lifecycleService: ILifecycleService,
@@ -226,7 +238,18 @@ export class FileWorkingCopyManager<T extends IFileWorkingCopyModel> extends Dis
 		this._register(this.workingCopyFileService.onDidRunWorkingCopyFileOperation(e => this.onDidRunWorkingCopyFileOperation(e)));
 
 		// Lifecycle
-		this.lifecycleService.onShutdown(() => this.dispose());
+		this.lifecycleService.onWillShutdown(event => event.join(this.onWillShutdown(), 'join.fileWorkingCopyManager'));
+	}
+
+	private async onWillShutdown(): Promise<void> {
+		let fileWorkingCopies: IFileWorkingCopy<T>[];
+
+		// As long as file working copies are pending to be saved, we prolong the shutdown
+		// until that has happened to ensure we are not shutting down in the middle of
+		// writing to the working copy (https://github.com/microsoft/vscode/issues/116600).
+		while ((fileWorkingCopies = this.workingCopies.filter(workingCopy => workingCopy.hasState(FileWorkingCopyState.PENDING_SAVE))).length > 0) {
+			await Promises.settled(fileWorkingCopies.map(workingCopy => workingCopy.joinState(FileWorkingCopyState.PENDING_SAVE)));
+		}
 	}
 
 	//#region Resolve from file changes
@@ -447,7 +470,7 @@ export class FileWorkingCopyManager<T extends IFileWorkingCopyModel> extends Dis
 		else {
 			didCreateWorkingCopy = true;
 
-			const newWorkingCopy = workingCopy = this.instantiationService.createInstance(FileWorkingCopy, resource, this.labelService.getUriBasenameLabel(resource), this.modelFactory) as unknown as IFileWorkingCopy<T>;
+			const newWorkingCopy = workingCopy = this.instantiationService.createInstance(FileWorkingCopy, this.workingCopyTypeId, resource, this.labelService.getUriBasenameLabel(resource), this.modelFactory) as unknown as IFileWorkingCopy<T>;
 			workingCopyResolve = workingCopy.resolve(options);
 
 			this.registerWorkingCopy(newWorkingCopy);
@@ -553,21 +576,6 @@ export class FileWorkingCopyManager<T extends IFileWorkingCopyModel> extends Dis
 			dispose(workingCopyListener);
 			this.mapResourceToWorkingCopyListeners.delete(resource);
 		}
-	}
-
-	private clear(): void {
-
-		// Working copy caches
-		this.mapResourceToWorkingCopy.clear();
-		this.mapResourceToPendingWorkingCopyResolve.clear();
-
-		// Dispose the dispose listeners
-		this.mapResourceToDisposeListener.forEach(listener => listener.dispose());
-		this.mapResourceToDisposeListener.clear();
-
-		// Dispose the working copy change listeners
-		this.mapResourceToWorkingCopyListeners.forEach(listener => listener.dispose());
-		this.mapResourceToWorkingCopyListeners.clear();
 	}
 
 	//#endregion
@@ -703,10 +711,43 @@ export class FileWorkingCopyManager<T extends IFileWorkingCopyModel> extends Dis
 		return true;
 	}
 
-	dispose(): void {
+	override dispose(): void {
 		super.dispose();
 
-		this.clear();
+		// Clear working copy caches
+		//
+		// Note: we are not explicitly disposing the working copies
+		// known to the manager because this can have unwanted side
+		// effects such as backups getting discarded once the working
+		// copy unregisters. We have an explicit `destroy`
+		// for that purpose (https://github.com/microsoft/vscode/pull/123555)
+		//
+		this.mapResourceToWorkingCopy.clear();
+		this.mapResourceToPendingWorkingCopyResolve.clear();
+
+		// Dispose the dispose listeners
+		dispose(this.mapResourceToDisposeListener.values());
+		this.mapResourceToDisposeListener.clear();
+
+		// Dispose the working copy change listeners
+		dispose(this.mapResourceToWorkingCopyListeners.values());
+		this.mapResourceToWorkingCopyListeners.clear();
+	}
+
+	async destroy(): Promise<void> {
+
+		// Make sure all dirty working copies are saved to disk
+		await Promises.settled(this.workingCopies.map(async workingCopy => {
+			if (workingCopy.isDirty()) {
+				await workingCopy.save();
+			}
+		}));
+
+		// Dispose all working copies
+		dispose(this.mapResourceToWorkingCopy.values());
+
+		// Finally dispose manager
+		this.dispose();
 	}
 
 	//#endregion
