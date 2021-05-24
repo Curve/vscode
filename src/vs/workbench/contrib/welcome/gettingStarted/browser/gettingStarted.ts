@@ -20,7 +20,7 @@ import { IKeybindingService } from 'vs/platform/keybinding/common/keybinding';
 import { ITelemetryService, lastSessionDateStorageKey } from 'vs/platform/telemetry/common/telemetry';
 import { DomScrollableElement } from 'vs/base/browser/ui/scrollbar/scrollableElement';
 import { gettingStartedCheckedCodicon, gettingStartedUncheckedCodicon } from 'vs/workbench/contrib/welcome/gettingStarted/browser/gettingStartedIcons';
-import { IOpenerService } from 'vs/platform/opener/common/opener';
+import { IOpenerService, matchesScheme } from 'vs/platform/opener/common/opener';
 import { URI } from 'vs/base/common/uri';
 import { EditorPane } from 'vs/workbench/browser/parts/editor/editorPane';
 import { IStorageService, StorageScope, StorageTarget } from 'vs/platform/storage/common/storage';
@@ -43,7 +43,7 @@ import { IQuickInputService } from 'vs/platform/quickinput/common/quickInput';
 import { Emitter, Event } from 'vs/base/common/event';
 import { LinkedText } from 'vs/base/common/linkedText';
 import { Button } from 'vs/base/browser/ui/button/button';
-import { attachButtonStyler, attachLinkStyler } from 'vs/platform/theme/common/styler';
+import { attachButtonStyler } from 'vs/platform/theme/common/styler';
 import { Link } from 'vs/platform/opener/browser/link';
 import { renderFormattedText } from 'vs/base/browser/formattedTextRenderer';
 import { IWebviewService } from 'vs/workbench/contrib/webview/browser/webview';
@@ -56,9 +56,9 @@ import { generateTokensCSSForColorMap } from 'vs/editor/common/modes/supports/to
 import { ResourceMap } from 'vs/base/common/map';
 import { IFileService } from 'vs/platform/files/common/files';
 import { joinPath } from 'vs/base/common/resources';
-import { asWebviewUri } from 'vs/workbench/contrib/webview/common/webviewUri';
-import { IWorkbenchEnvironmentService } from 'vs/workbench/services/environment/common/environmentService';
 import { INotificationService } from 'vs/platform/notification/common/notification';
+import { asWebviewUri } from 'vs/workbench/api/common/shared/webview';
+import { Schemas } from 'vs/base/common/network';
 
 const SLIDE_TRANSITION_TIME_MS = 250;
 const configurationKey = 'workbench.startupEditor';
@@ -131,7 +131,6 @@ export class GettingStartedPage extends EditorPane {
 		@IExtensionService private readonly extensionService: IExtensionService,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@INotificationService private readonly notificationService: INotificationService,
-		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
 		@IEditorGroupsService private readonly groupsService: IEditorGroupsService,
 		@IContextKeyService contextService: IContextKeyService,
 		@IQuickInputService private quickInputService: IQuickInputService,
@@ -235,7 +234,8 @@ export class GettingStartedPage extends EditorPane {
 	}
 
 	async makeCategoryVisibleWhenAvailable(categoryID: string) {
-		await this.extensionService.whenInstalledExtensionsRegistered();
+		await this.gettingStartedService.installedExtensionsRegistered;
+
 		this.gettingStartedCategories = this.gettingStartedService.getCategories();
 		const ourCategory = this.gettingStartedCategories.find(c => c.id === categoryID);
 		if (!ourCategory) {
@@ -290,10 +290,7 @@ export class GettingStartedPage extends EditorPane {
 								break;
 							}
 							case 'hideCategory': {
-								const selectedCategory = this.gettingStartedCategories.find(category => category.id === argument);
-								if (!selectedCategory) { throw Error('Could not find category with ID ' + argument); }
-								this.setHiddenCategories([...this.getHiddenCategories().add(argument)]);
-								this.gettingStartedList?.rerender();
+								this.hideCategory(argument);
 								break;
 							}
 							// Use selectTask over selectStep to keep telemetry consistant:https://github.com/microsoft/vscode/issues/122256
@@ -303,6 +300,19 @@ export class GettingStartedPage extends EditorPane {
 							}
 							case 'toggleStepCompletion': {
 								this.toggleStepCompletion(argument);
+								break;
+							}
+							case 'allDone': {
+								this.markAllStepsComplete();
+								break;
+							}
+							case 'nextSection': {
+								const next = this.currentCategory?.next;
+								if (next) {
+									this.scrollToCategory(next);
+								} else {
+									console.error('Error scrolling to next section of', this.currentCategory);
+								}
 								break;
 							}
 							default: {
@@ -315,6 +325,27 @@ export class GettingStartedPage extends EditorPane {
 				}));
 			}
 		});
+	}
+
+	private hideCategory(categoryId: string) {
+		const selectedCategory = this.gettingStartedCategories.find(category => category.id === categoryId);
+		if (!selectedCategory) { throw Error('Could not find category with ID ' + categoryId); }
+		this.setHiddenCategories([...this.getHiddenCategories().add(categoryId)]);
+		this.gettingStartedList?.rerender();
+	}
+
+	private markAllStepsComplete() {
+		if (!this.currentCategory || this.currentCategory.content.type !== 'steps') {
+			throw Error('cannot run step action for category of non steps type' + this.currentCategory?.id);
+		}
+
+		this.currentCategory.content.steps.forEach(step => {
+			if (!step.done) {
+				this.gettingStartedService.progressStep(step.id);
+			}
+		});
+		this.hideCategory(this.currentCategory.id);
+		this.scrollPrev();
 	}
 
 	private toggleStepCompletion(argument: string) {
@@ -429,6 +460,12 @@ export class GettingStartedPage extends EditorPane {
 			let isDisposed = false;
 			this.stepDisposables.add(toDisposable(() => { isDisposed = true; }));
 
+			this.stepDisposables.add(webview.onDidClickLink(link => {
+				if (matchesScheme(link, Schemas.https) || matchesScheme(link, Schemas.https) || (matchesScheme(link, Schemas.command))) {
+					this.openerService.open(link, { allowCommands: true });
+				}
+			}));
+
 			this.stepDisposables.add(this.themeService.onDidColorThemeChange(async () => {
 				// Render again since syntax highlighting of code blocks may have changed
 				const body = await this.renderMarkdown(media.path, media.base);
@@ -437,6 +474,11 @@ export class GettingStartedPage extends EditorPane {
 				}
 			}));
 		}
+	}
+
+	async selectStepLoose(id: string) {
+		const toSelect = this.editorInput.selectedCategory + '#' + id;
+		this.selectStep(toSelect);
 	}
 
 	private async selectStep(id: string | undefined, delayFocus = true, forceRebuild = false) {
@@ -460,6 +502,7 @@ export class GettingStartedPage extends EditorPane {
 			stepElement.classList.add('expanded');
 			stepElement.setAttribute('aria-expanded', 'true');
 			this.buildMediaComponent(id);
+			this.gettingStartedService.progressByEvent('stepSelected:' + id);
 		} else {
 			this.editorInput.selectedStep = undefined;
 		}
@@ -474,7 +517,7 @@ export class GettingStartedPage extends EditorPane {
 
 	private updateMediaSourceForColorMode(element: HTMLImageElement, sources: { hc: URI, dark: URI, light: URI }) {
 		const themeType = this.themeService.getColorTheme().type;
-		element.srcset = sources[themeType].toString().replace(/ /g, '%20') + ' 1.5x';
+		element.srcset = sources[themeType].toString(true).replace(/ /g, '%20') + ' 1.5x';
 	}
 
 	private async renderMarkdown(path: URI, base: URI): Promise<string> {
@@ -486,7 +529,7 @@ export class GettingStartedPage extends EditorPane {
 			if (src.startsWith('https://')) { return `src="${src}"`; }
 
 			const path = joinPath(base, src);
-			const transformed = asWebviewUri(this.environmentService, this.webviewID, path).toString();
+			const transformed = asWebviewUri(path).toString();
 			return `src="${transformed}"`;
 		});
 
@@ -812,14 +855,17 @@ export class GettingStartedPage extends EditorPane {
 			bar.setAttribute('aria-valuemin', '0');
 			bar.setAttribute('aria-valuenow', '' + numDone);
 			bar.setAttribute('aria-valuemax', '' + numTotal);
-			const progress = Math.max((numDone / numTotal) * 100, 3);
+			const progress = (numDone / numTotal) * 100;
 			bar.style.width = `${progress}%`;
 
+
+			(element.parentElement as HTMLElement).classList[numDone === 0 ? 'add' : 'remove']('no-progress');
+
 			if (numTotal === numDone) {
-				bar.title = `All steps complete!`;
+				bar.title = localize('gettingStarted.allStepsComplete', "All {0} steps complete!", numTotal);
 			}
 			else {
-				bar.title = `${numDone} of ${numTotal} steps complete`;
+				bar.title = localize('gettingStarted.someStepsComplete', "{0} of {1} steps complete", numDone, numTotal);
 			}
 		});
 	}
@@ -885,6 +931,10 @@ export class GettingStartedPage extends EditorPane {
 					}
 					this.openerService.open(command, { allowCommands: true });
 
+					if (!isCommand && node.href.startsWith('https://')) {
+						this.gettingStartedService.progressByEvent('onLink:' + node.href);
+					}
+
 				}, null, this.detailsPageDisposables);
 
 				if (isCommand) {
@@ -902,11 +952,10 @@ export class GettingStartedPage extends EditorPane {
 					if (typeof node === 'string') {
 						append(p, renderFormattedText(node, { inline: true, renderCodeSegements: true }));
 					} else {
-						const link = this.instantiationService.createInstance(Link, node);
+						const link = this.instantiationService.createInstance(Link, node, {});
 
 						append(p, link.el);
 						this.detailsPageDisposables.add(link);
-						this.detailsPageDisposables.add(attachLinkStyler(link, this.themeService));
 					}
 				}
 			}
@@ -971,7 +1020,19 @@ export class GettingStartedPage extends EditorPane {
 					stepDescription);
 			});
 
-		const stepsContainer = $('.getting-started-detail-container', { 'role': 'list' }, ...categoryElements);
+		const showNextCategory =
+			this.gettingStartedCategories.find(_category => _category.id === category.next && _category.content.type === 'steps' && !_category.content.done);
+
+		const stepsContainer = $(
+			'.getting-started-detail-container', { 'role': 'list' },
+			...categoryElements,
+			$('.done-next-container', {},
+				$('button.button-link.all-done', { 'x-dispatch': 'allDone' }, $('span.codicon.codicon-check-all'), localize('allDone', "Mark Done")),
+				...(showNextCategory
+					? [$('button.button-link.next', { 'x-dispatch': 'nextSection' }, localize('nextOne', "Next Section"), $('span.codicon.codicon-arrow-small-right'))]
+					: []),
+			)
+		);
 		this.detailsScrollbar = this._register(new DomScrollableElement(stepsContainer, { className: 'steps-container' }));
 		const stepListComponent = this.detailsScrollbar.getDomNode();
 
@@ -1231,7 +1292,7 @@ registerThemingParticipant((theme, collector) => {
 	if (link) {
 		collector.addRule(`.monaco-workbench .part.editor > .content .gettingStartedContainer a:not(.codicon-close) { color: ${link}; }`);
 		collector.addRule(`.monaco-workbench .part.editor > .content .gettingStartedContainer .button-link { color: ${link}; }`);
-		collector.addRule(`.monaco-workbench .part.editor > .content .gettingStartedContainer .button-link .scroll-button { color: ${link}; }`);
+		collector.addRule(`.monaco-workbench .part.editor > .content .gettingStartedContainer .button-link .codicon { color: ${link}; }`);
 	}
 	const activeLink = theme.getColor(textLinkActiveForeground);
 	if (activeLink) {
